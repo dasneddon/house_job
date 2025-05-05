@@ -54,19 +54,20 @@ knitr::knit_hooks$set(
 )
 
 options(scipen = 999)
+options("modelsummary_factory_default" = "kableExtra")
 ```
 
 ## Introduction
 
 The objective of this paper is to demonstrate a causal effect of employment shocks on the price of housing. I intend to use a Bartik shift-share instrument using the changes in the share of employment in a sector within a metropolitan statistical area vs. changes in employment nationally. 
 
-@bartik1991 sought to isolate exogenous national trends for analysis on the effect of local policies. This paper seeks to do the same for local shifts in the labor market, specifically the "mix" of the labor market by industry for analysis of median rents in each Metropolitan Statistical Area (MSA) in the United States.
+@bartik1991 sought to isolate exogenous national trends for analysis on the effect of local policies. This paper seeks to do the same for local shifts in the labor market, specifically the "mix" of the labor market by industry for analysis of median housing value in each Metropolitan Statistical Area (MSA) in the United States.
 
 The essential equation of a Bartik instrument as indicated by @goldsmith:
 
 $$
 \chi_l = \sum_k z_{lk}g_{lk}
-$$
+$${#eq-bartik}
 
 Where:
 $\chi_{it}$: The instrument in location $l$.\
@@ -76,8 +77,8 @@ $g_{lk}$: The growth rate of industry $k$ in location $l$.\
 This forms the first stage of a regression, as the instrument becomes a term in the second stage:
 
 $$
-Y = \beta_n\mathbf X_n + \gamma_0 \chi _l +\varepsilon 
-$$
+Y = \beta_n\mathbf X_n + \gamma_0 \chi _l +\varepsilon
+$${#eq-secondstage}
 
 ## Literature Review
 
@@ -139,7 +140,7 @@ demos_l <- getCensus(
            "B02001_006E",  # Native Hawaiian and Other Pacific Islander alone
            "B02001_007E",  # Some other race alone
            "B02001_008E",  # Two or more races
-           "B25064_001E"   ### Median gross rent
+           "B25077_001E"    ### Median home value
   ),
   region = "metropolitan statistical area/micropolitan statistical area:*"
 
@@ -277,9 +278,10 @@ colnames(demos) <- c("AREA",
                      "hawaiian",
                      "other",
                      "twomore",
-                     "med_gross_rent",
+                     "median_home_value",
                      "YEAR" )
 demos$AREAYEAR <- paste0(demos$AREA, demos$YEAR)
+
 ```
 
 Then calculate percentages for eacah demographic and elminate columns I no longer want.
@@ -312,7 +314,7 @@ demos <- demos[, c("AREAYEAR",
                    "hawaiian_pct",
                    "other_pct",
                    "twomore_pct",
-                   "med_gross_rent")]
+                   "median_home_value")]
 
 ```
 
@@ -330,176 +332,82 @@ I merge the data sets into a master data frame. The data is now clean and ready 
 
 ```{r}
 job_demo <- merge(job_data, demos, by = "AREAYEAR")
-
-
+colnames(job_loc_all)[1] <- "AREA"
+job_loc_all <- job_loc_all %>%
+  rename(tot_emp = B24050_001E)
+job_loc_all$AREAYEAR <- paste0(job_loc_all$AREA,job_loc_all$YEAR)
+job_loc_all <- aggregate(tot_emp ~ AREAYEAR, data = job_loc_all, FUN = sum)
+job_demo <- merge(job_demo, job_loc_all, by = "AREAYEAR")
+job_demo_summary <- job_demo %>%
+  group_by(AREA) %>%
+  summarise(across(c(tot_pop, inc, median_home_value, tot_emp), mean, na.rm = TRUE))
 ```
 
-
+Summary Statistics:
 
 ```{r}
+title <- "Job and Demographic Summary Statistics"
+frmla <- (`Population` = tot_pop) +
+  (`Income` = inc) + 
+  (`Median Rent` = median_home_value) +
+  (`Employment` = tot_emp) ~ 
+  (`MSA` = length) + 
+  Mean + 
+  (`St. Dev.` = sd) + 
+  (`Min` = min) + 
+  (`Max` = max)
 
+datasummary(frmla, 
+            data = job_demo_summary, 
+            title = title,
+            fmt = fmt_significant(2))
 
-emplhousing <- read.csv("emplhousing.csv")
-emplhousing$TOT_EMP <- as.numeric(emplhousing$TOT_EMP)
-emplhousing <- emplhousing %>%
-  mutate(OCC_GROUP = case_when(
-    OCC_TITLE %in% c(
-      "Computer and Mathematical Occupations",
-      "Architecture and Engineering Occupations",
-      "Legal Occupations",
-      "Management Occupations",
-      "Life, Physical, and Social Science Occupations",
-      "Business and Financial Operations Occupations"
-    ) ~ "STEM & Professions",
-    
-    OCC_TITLE %in% c(
-      "Sales and Related Occupations",
-      "Food Preparation and Serving Related Occupations",
-      "Personal Care and Service Occupations",
-      "Building and Grounds Cleaning and Maintenance Occupations",
-      "Office and Administrative Support Occupations"
-    ) ~ "Service Sector",
-    
-    OCC_TITLE %in% c(
-      "Education, Training, and Library Occupations",
-      "Protective Service Occupations",
-      "Community and Social Service Occupations",
-      "Educational Instruction and Library Occupations"
-    ) ~ "Public Sector & Education",  
-    
-    OCC_TITLE %in% c(
-      "Construction and Extraction Occupations",
-      "Installation, Maintenance, and Repair Occupations",
-      "Production Occupations",
-      "Transportation and Material Moving Occupations"
-    ) ~ "Skilled Trades",
-    
-    OCC_TITLE %in% c(
-      "Healthcare Practitioners and Technical Occupations",
-      "Healthcare Support Occupations"
-    ) ~ "Health Sector",
-    
-    OCC_TITLE %in% "Farming, Fishing, and Forestry Occupations" ~ "Agriculture",
-    
-    OCC_TITLE %in% "Arts, Design, Entertainment, Sports, and Media Occupations" ~ "Entertainment",
-    
-    TRUE ~ "All Occupations"
-  ))
 ```
+The dataset before instrument is applied is available here -> [@Sneddon2025jobdata_no_inst]
 
 
+## Calculations for Instrument and Local Share Changes
+
+First establish baseline industry shares for each location. This will be needed for the Bartik instrument.
 
 ```{r}
-# ##FIND INDUSTRY SHARES BY YEAR (NATIONAL)
-# emplhousing$AOLY <- 0
-# for (ay in unique(emplhousing$AREAYEAR)){
-#   emplhousing[emplhousing$AREAYEAR==ay,"AOLY"] <- 
-#     emplhousing[emplhousing$O_GROUP=="total" & emplhousing$AREAYEAR==ay,"TOT_EMP"]
-# }
-
+industry_shares <- job_demo[job_demo$YEAR == 2010,]
+industry_shares$base_share <- industry_shares$employment/industry_shares$tot_emp
+industry_shares <- industry_shares[,c("AREA", "industry_pool", "base_share")]
+job_demo <- merge(job_demo, industry_shares, by=c("AREA", "industry_pool"))
 ```
 
-
+Calculate national employment shocks and merge back into the main `job_demo` dataframe.
 
 ```{r}
-nsa_index <- data.frame("AREAYEAR"= emplhousing$AREAYEAR, "index_nsa" = emplhousing$index_nsa)
-nsa_index <- nsa_index[!duplicated(nsa_index),]
-emplhousing_AO <- emplhousing[emplhousing$O_GROUP == "total",]
-emplhousing_AO <- emplhousing_AO[,c("AREAYEAR", "YEAR", "TOT_EMP")]
-emplhousing_AO <- emplhousing_AO %>%
-  rename(AO_EMP = TOT_EMP)
-empl_ANNUAL <- aggregate(AO_EMP ~ YEAR, data = emplhousing_AO, FUN = sum)
-emplhousing_AO <- emplhousing_AO[,c("AREAYEAR", "AO_EMP")]
-emplhousing <- emplhousing[emplhousing$O_GROUP != "total",]
-emplhousing_group <- aggregate(TOT_EMP ~ OCC_GROUP + AREA + AREAYEAR + AREA_TITLE + YEAR, data = emplhousing, FUN = sum)
-emplhousing_group <- merge(emplhousing_group, emplhousing_AO, by = "AREAYEAR")
-emplhousing_group <- merge(emplhousing_group, demos, by = "AREA" )
-
+natl_shocks <- aggregate(employment ~ occ_code + YEAR , data = job_demo, FUN = sum)
+natl_shocks <- pdata.frame(natl_shocks, index = c("occ_code", "YEAR"))
+natl_shocks <- natl_shocks %>% arrange(occ_code, YEAR)
+natl_shocks$nat_growth <- (natl_shocks$employment - plm::lag(natl_shocks$employment, 1)) / plm::lag(natl_shocks$employment, 1) 
+nat_emp <- natl_shocks[, c("occ_code", "YEAR", "nat_growth")]
+job_demo <- merge(job_demo, nat_emp, by=c("occ_code", "YEAR"))
 ```
 
-
+Same with local employment shocks, this is what the instrument is going to be interacting with.
 
 ```{r}
-
-##INDUSTRY SHARES IN t=0 (2016)
-industry_shares <- emplhousing_group[emplhousing_group$YEAR == 2016,]
-industry_shares$nat_share <- industry_shares$TOT_EMP/industry_shares$AO_EMP
-industry_shares <- industry_shares[,c("AREA", "OCC_GROUP", "nat_share")]
-
-
-
+local_shocks <- aggregate(employment ~ occ_code + YEAR + AREA, data = job_demo, FUN = sum)
+local_shocks <- pdata.frame(local_shocks, index = c("occ_code", "AREA", "YEAR"))
+local_shocks <- local_shocks %>% arrange(AREA, YEAR)
+local_shocks$loc_growth <- (local_shocks$employment - plm::lag(local_shocks$employment, 1)) / plm::lag(local_shocks$employment, 1)
+loc_emp <- local_shocks[, c("occ_code", "YEAR", "AREA", "loc_growth")]
+job_demo <- merge(job_demo, loc_emp, by=c("occ_code", "YEAR", "AREA"))
 ```
+
+Now for the bartik instrument. Since `nat_growth` encompasses the entire US it fits the bill as the summation of the industries by location as indicated in @eq-bartik.
 
 ```{r}
-
-
-
+job_demo$natl_shock_wt <- job_demo$nat_growth*job_demo$base_share
+job_demo <- merge(job_demo, ay_growth, by = "AREAYEAR")
 ```
-
-```{r}
-
-
-
-
-```
-
-```{r}
-natl_shocks <- aggregate(TOT_EMP ~ OCC_GROUP + YEAR, data = emplhousing_group, FUN = sum)
-
-library(plm)
-natl_shocks <- pdata.frame(natl_shocks, index = c("OCC_GROUP", "YEAR"))
-natl_shocks$nat_growth <- (natl_shocks$TOT_EMP - plm::lag(natl_shocks$TOT_EMP, 1)) / plm::lag(natl_shocks$TOT_EMP, 1) 
-```
-
-```{r}
-
-nat_emp <- natl_shocks[, c("OCC_GROUP", "YEAR", "nat_growth")]
-emplhousing_group <- merge(emplhousing_group, nat_emp, by=c("OCC_GROUP", "YEAR"))
-ay_growth <- pdata.frame(aggregate(TOT_EMP ~ AREA + YEAR + AREAYEAR, data = emplhousing, FUN = sum), index = c("AREA","YEAR"))
-ay_growth$true_growth <- (ay_growth$TOT_EMP - plm::lag(ay_growth$TOT_EMP, 1)) / plm::lag(ay_growth$TOT_EMP,1)
-ay_growth <- ay_growth[,c("AREAYEAR", "true_growth")]
-emplhousing_group <- merge(emplhousing_group, industry_shares, by=c("AREA", "OCC_GROUP"))
-emplhousing_group$loc_share <- emplhousing_group$TOT_EMP/emplhousing_group$AO_EMP
-emplhousing_group$natl_shock_wt <- emplhousing_group$nat_share*emplhousing_group$nat_growth
-emplhousing_group <- merge(emplhousing_group, ay_growth, by = "AREAYEAR" )
-emplhousing_group <- merge(emplhousing_group, nsa_index, by = "AREAYEAR")
-```
-
-```{r}
-
-# baseline_sh <- emplhousing %>%
-#   filter(YEAR == 2016) %>%
-#   select(AREA, OCC_GROUP, AOLY_sh) %>%
-#   rename(baseline_sh = AOLY_sh)
-
-
-#emplhousing$weighted_growth <- emplhousing$baseline_sh * emplhousing$nat_growth
-
-#emplhousing <- emplhousing %>% 
-#  group_by(AREA,YEAR) %>%
-#  mutate(bartik = sum(weighted_growth, na.rm = TRUE))
-
-# emplhousing$OCC_GROUP <- as.factor(emplhousing$OCC_GROUP)
-# emplhousing$OCC_GROUP <- relevel(emplhousing$OCC_GROUP, ref = "Service Sector")
-emplhousing_group <- emplhousing_group %>%
-  mutate(across(
-    c("inc2016", "tot_pop", "college_pct", "over25_pct", "true_growth", "natl_shock_wt", "index_nsa"),
-    as.numeric
-    
-  ))
-
-
-
-emplhousing_group <- na.omit(emplhousing_group)
-emplhousing_group <- as.data.frame(emplhousing_group)
-iv_model <- feols(index_nsa ~ OCC_GROUP + loc_share| AREA + YEAR | true_growth ~ natl_shock_wt, data = emplhousing_group)
-summary(iv_model)
-
-```
-
 ## Empirical Strategy
 
-
+My goal is investigate the effects of national changes the employment mix affect the local home values. First 
 
 For inline equations, only use a single dollar sign like: $\overline{Y} = \widehat{m}\overline{X} + \widehat{b}$.
 

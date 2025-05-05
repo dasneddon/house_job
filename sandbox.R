@@ -35,7 +35,7 @@ demos_l <- getCensus(
            "B02001_006E",  # Native Hawaiian and Other Pacific Islander alone
            "B02001_007E",  # Some other race alone
            "B02001_008E",  # Two or more races
-           "B25064_001E"   # Median gross rent
+           "B25077_001E"   # Median home value
   ),
   region = "metropolitan statistical area/micropolitan statistical area:*"
 
@@ -159,7 +159,7 @@ colnames(demos) <- c("AREA",
                      "hawaiian",
                      "other",
                      "twomore",
-                     "med_gross_rent",
+                     "median_home_value",
                      "YEAR" )
 demos$AREAYEAR <- paste0(demos$AREA, demos$YEAR)
 
@@ -190,7 +190,7 @@ demos <- demos[, c("AREAYEAR",
                    "hawaiian_pct",
                    "other_pct",
                    "twomore_pct",
-                   "med_gross_rent")]
+                   "median_home_value")]
 
 
 groups   <- unique(job_data$industry_pool)
@@ -236,15 +236,23 @@ ay_growth$true_growth <- (ay_growth$employment - plm::lag(ay_growth$employment, 
 ay_growth$AREAYEAR <- paste0(ay_growth$AREA,ay_growth$YEAR)
 ay_growth <- ay_growth[,c("AREAYEAR", "true_growth")]
 job_demo<- merge(job_demo, industry_shares, by=c("AREA", "industry_pool"))
-job_demo$loc_share <- job_demo$employment/job_demo$tot_emp
+
+local_shocks <- aggregate(employment ~ occ_code + YEAR + AREA, data = job_demo, FUN = sum)
+local_shocks <- pdata.frame(local_shocks, index = c("occ_code", "AREA", "YEAR"))
+local_shocks <- local_shocks %>% arrange(AREA, YEAR)
+local_shocks$loc_growth <- (local_shocks$employment - plm::lag(local_shocks$employment, 1)) / plm::lag(local_shocks$employment, 1)
+
+loc_emp <- local_shocks[, c("occ_code", "YEAR", "AREA", "loc_growth")]
+job_demo <- merge(job_demo, loc_emp, by=c("occ_code", "YEAR", "AREA"))
+
 job_demo$natl_shock_wt <- job_demo$nat_growth*job_demo$nat_share
 job_demo <- merge(job_demo, ay_growth, by = "AREAYEAR")
 
 
-housing_shocks <- data.frame("AREA" = job_demo$AREA, "YEAR" = job_demo$YEAR, "AREAYEAR" = job_demo$AREAYEAR, "med_gross_rent" = job_demo$med_gross_rent)
+housing_shocks <- data.frame("AREA" = job_demo$AREA, "YEAR" = job_demo$YEAR, "AREAYEAR" = job_demo$AREAYEAR, "median_home_value" = job_demo$median_home_value)
 housing_shocks <- pdata.frame(housing_shocks, index = c("AREA", "YEAR"))
 housing_shocks <- housing_shocks[!duplicated(housing_shocks$AREAYEAR),]
-housing_shocks$hi_pctchange <- (housing_shocks$med_gross_rent- plm::lag(housing_shocks$med_gross_rent,1))/plm::lag(housing_shocks$med_gross_rent,1) 
+housing_shocks$hi_pctchange <- (housing_shocks$median_home_value- plm::lag(housing_shocks$median_home_value,1))/plm::lag(housing_shocks$median_home_value,1) 
 
 housing_shocks <- data.frame("AREAYEAR" = housing_shocks$AREAYEAR, "hi_pctchange" = housing_shocks$hi_pctchange)
 job_demo <- merge(job_demo, housing_shocks, by = "AREAYEAR")
@@ -261,26 +269,29 @@ job_demo <- job_demo[lim,]
 
 
 
-iv_model <- feols(asinh(med_gross_rent) ~ i(industry_pool, ref = "public_nonprofit") + 
-                    tot_pop + 
+iv_model <- feols(median_home_value ~ 
+                    i(industry_pool, 100*loc_growth, ref = "consumer_services") +
+                    tot_pop +
                     inc 
-                    # college_pct + 
-                    # over25_pct + 
-                    # white_pct + 
-                    # black_pct + 
-                    # amerindian_pct + 
-                    # asian_pct + 
-                    # hawaiian_pct + 
                   | AREA + YEAR | 
-                    i(industry_pool,true_growth) ~ 
-                    i(industry_pool,natl_shock_wt), 
+                    i(industry_pool,100*true_growth) ~ 
+                    i(industry_pool,100*natl_shock_wt), 
                   data = job_demo)
 
  summary(iv_model)
-
+ 
+ ols_model <- feols(median_home_value ~ 
+                     i(industry_pool, 100*loc_growth, ref = "consumer_services") +
+                      tot_pop +
+                      inc
+                   | AREA + YEAR , 
+                   data = job_demo)
+ 
+ summary(ols_model)
 
  table(job_demo$industry_pool[!duplicated(paste0(job_demo$industry_pool, "_", job_demo$YEAR, "_", job_demo$AREA))])
 
+ 
  
  
  
