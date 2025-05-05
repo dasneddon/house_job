@@ -1,5 +1,0 @@
-library(tidycensus)
-
-acs_vars <- load_variables(2023, "acs5", cache = TRUE) 
-  
-)

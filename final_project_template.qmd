@@ -1,0 +1,514 @@
+---
+title: "Your Title Here"
+subtitle: "Maybe you have a subtitle"
+author: "David Sneddon"
+institute: "Old Dominion University"
+format: 
+  html:
+    theme: lux # Check here for more themes: https://quarto.org/docs/output-formats/html-themes.html
+    code-tools: true
+    code-fold: true
+    code-summary: "Code"
+    code-copy: hover
+    link-external-newwindow: true
+    tbl-cap-location: top
+    fig-cap-location: bottom
+    
+
+self-contained: true
+editor: source
+bibliography: bibliography.bib
+---
+
+```{r setup, include=FALSE}
+# DO NOT EDIT THIS
+
+knitr::opts_chunk$set(fig.align = 'center')
+knitr::opts_chunk$set(out.width = '90%')
+knitr::opts_chunk$set(results = 'hold')
+knitr::opts_chunk$set(fig.show = 'hold')
+knitr::opts_chunk$set(error = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+par(mar = c(4.1, 4.1, 1.1, 4.1))
+
+hooks = knitr::knit_hooks$get()
+hook_foldable = function(type) {
+  force(type)
+  function(x, options) {
+    res = hooks[[type]](x, options)
+    
+    if (isFALSE(options[[paste0("fold.", type)]])) return(res)
+    
+    paste0(
+      "<details open><summary>", gsub("^p", "P", gsub("^o", "O", type)), "</summary>\n\n",
+      res,
+      "\n\n</details>"
+    )
+  }
+}
+
+knitr::knit_hooks$set(
+  output = hook_foldable("output"),
+  plot = hook_foldable("plot")
+)
+
+options(scipen = 999)
+```
+
+## Introduction
+
+The objective of this paper is to demonstrate a causal effect of employment shocks on the price of housing. I intend to use a Bartik shift-share instrument using the changes in the share of employment in a sector within a metropolitan statistical area vs. changes in employment nationally. 
+
+@bartik1991 sought to isolate exogenous national trends for analysis on the effect of local policies. This paper seeks to do the same for local shifts in the labor market, specifically the "mix" of the labor market by industry for analysis of median rents in each Metropolitan Statistical Area (MSA) in the United States.
+
+The essential equation of a Bartik instrument as indicated by @goldsmith:
+
+$$
+\chi_l = \sum_k z_{lk}g_{lk}
+$$
+
+Where:
+$\chi_{it}$: The instrument in location $l$.\
+$z_{lk}$: The share of location $l$'s employment in industry $k$.\
+$g_{lk}$: The growth rate of industry $k$ in location $l$.\
+
+This forms the first stage of a regression, as the instrument becomes a term in the second stage:
+
+$$
+Y = \beta_n\mathbf X_n + \gamma_0 \chi _l +\varepsilon 
+$$
+
+## Literature Review
+
+Instruments are at the bleeding edge for causal inference research.  @goldsmith goes in depth and offers mathematical proofs for the soundness of Bartik instruments in general in addition to two specific applications. First they investigate the effects of national trends on labor supply elasticity. They deteremine that "national growth rates explain less than 1 percent" of the variation and therefore reject that national growth rates are a significant factor in labor demand estimates. In contrast, their second application, namely immigrant inflows effect on local labor demand, are "almost completelly explained by the immigrant inflows" among "high school equivalent workers". 
+
+
+## Libraries
+
+```{r, include=FALSE}
+library(dplyr)
+library(fixest)
+library(censusapi)
+library(plm)
+library(tidyr)
+library(modelsummary)
+```
+
+`dlpyr` [@libdplyr] \
+`fixest` [@libfixest] \
+`censusapi` [@libcensusapi] \
+`plm` [@libplm] \
+`tidyr` [@libtidyr] \
+`modelsummary` [@libmodelsummary]
+
+## Data
+
+The data for this test is exclusively obtained from the American Community Survey provided by @censusACS1_2010_2019. 
+
+
+```{r}
+
+#Dataframes to be filled up
+demos <- data.frame() #Demographic information pulled from Census API
+ind_data <- data.frame() #Industry Labor data pulled from Census API
+job_loc_all <- data.frame() #Total Employment for each MSA from Census API
+years <- 2010:2019
+
+
+##This for loop pulls raw data from the US Census API
+for (y in years) {
+  
+  ##Demographic Data##
+demos_l <- getCensus(
+  name = "acs/acs1",
+  vintage = y,
+  vars = c("B19013_001E", ### Median household income in the past 12 months (in inflation-adjusted dollars)
+           "B15003_001E", ### Total population 25 years and over (educational attainment denominator)
+           "B15003_022E", # Population with Bachelor's degree
+           "B15003_023E", # Population with Master's degree
+           "B15003_024E", # Population with Professional school degree
+           "B15003_025E", # Population with Doctorate degree
+           
+           
+           "B01003_001E", ### Total population
+           "B02001_002E",  # White alone
+           "B02001_003E",  # Black or African American alone
+           "B02001_004E",  # American Indian and Alaska Native alone
+           "B02001_005E",  # Asian alone
+           "B02001_006E",  # Native Hawaiian and Other Pacific Islander alone
+           "B02001_007E",  # Some other race alone
+           "B02001_008E",  # Two or more races
+           "B25064_001E"   ### Median gross rent
+  ),
+  region = "metropolitan statistical area/micropolitan statistical area:*"
+
+)
+
+  ###Labor Data by Industry###
+ind_data_l <- getCensus(
+  name = "acs/acs1",
+  vintage = y,
+  vars = industry_codes <- c(
+    # Agriculture, forestry, fishing and hunting, and mining
+    "B24050_003E", "B24050_044E",
+    # Construction
+    "B24050_004E", "B24050_045E",
+    # Manufacturing
+    "B24050_005E", "B24050_046E",
+    # Wholesale trade
+    "B24050_006E", "B24050_047E",
+    # Retail trade
+    "B24050_007E", "B24050_048E",
+    # Transportation and warehousing, and utilities
+    "B24050_008E", "B24050_049E",
+    # Information
+    "B24050_009E", "B24050_050E",
+    # Finance and insurance, and real estate and rental and leasing
+    "B24050_010E", "B24050_051E",
+    # Professional, scientific, and management, and administrative and waste management services
+    "B24050_011E", "B24050_052E",
+    # Educational services, and health care and social assistance
+    "B24050_012E", "B24050_053E",
+    # Arts, entertainment, and recreation, and accommodation and food services
+    "B24050_013E", "B24050_054E",
+    # Other services, except public administration
+    "B24050_014E", "B24050_055E",
+    # Public administration
+    "B24050_015E", "B24050_056E"
+  ),
+  region = "metropolitan statistical area/micropolitan statistical area:*",
+) 
+
+  ###All labor data by location$$$
+job_loc_all_l <- getCensus(
+  name = "acs/acs1",
+  vintage = y,
+  vars = "B24050_001E",
+  region = "metropolitan statistical area/micropolitan statistical area:*",
+)
+
+
+
+## Adding in year to the raw data frames and pulling each year together
+demos_l$YEAR <- y
+demos <- rbind(demos, demos_l)
+
+ind_data_l$YEAR <- y
+ind_data <- rbind(ind_data, ind_data_l)
+
+job_loc_all_l$YEAR<-y
+job_loc_all <- rbind(job_loc_all, job_loc_all_l)
+
+
+}
+
+```
+
+Next comes some cleaning. The census data splits the industry totals by sex, so first these need to be pulled together. Then I manipulate the raw data that amounts to a transposition and separate rows for each MSA, year, and industry combination.
+
+```{r}
+
+
+job_data <- ind_data %>%
+  mutate(
+    agriculture = as.numeric(B24050_003E) + as.numeric(B24050_044E),
+    construction = as.numeric(B24050_004E) + as.numeric(B24050_045E),
+    manufacturing = as.numeric(B24050_005E) + as.numeric(B24050_046E),
+    wholesale = as.numeric(B24050_006E) + as.numeric(B24050_047E),
+    retail = as.numeric(B24050_007E) + as.numeric(B24050_048E),
+    transport_util = as.numeric(B24050_008E) + as.numeric(B24050_049E),
+    information = as.numeric(B24050_009E) + as.numeric(B24050_050E),
+    finance_realestate = as.numeric(B24050_010E) + as.numeric(B24050_051E),
+    professional = as.numeric(B24050_011E) + as.numeric(B24050_052E),
+    education_health = as.numeric(B24050_012E) + as.numeric(B24050_053E),
+    arts_accommodation = as.numeric(B24050_013E) + as.numeric(B24050_054E),
+    other_services = as.numeric(B24050_014E) + as.numeric(B24050_055E),
+    public_admin = as.numeric(B24050_015E) + as.numeric(B24050_056E)
+  ) %>%
+select(-starts_with("B24050_"))
+colnames(job_data)[1] <- "AREA"
+
+
+job_data <- job_data %>%
+  select(AREA, YEAR, starts_with("agriculture"):public_admin) %>%
+  pivot_longer(
+    cols = -c(AREA, YEAR),
+    names_to = "industry",
+    values_to = "employment"
+  )
+
+job_data <- na.omit(job_data)
+```
+
+To mitigate noise and in an effort to protect the instrument, I aggregate the several industries into five categories.
+
+```{r}
+
+job_data <- job_data %>%
+  mutate(industry_pool = case_when(
+    industry %in% c("retail", "arts_accommodation", "other_services") ~ "consumer_services",
+    industry %in% c("finance_realestate", "information", "professional")~ "business_services",
+    industry %in% c("education_health", "public_admin") ~ "public_nonprofit",
+    industry %in% c("construction", "manufacturing", "agriculture") ~ "goods_producing",
+    industry %in% c("wholesale", "transport_util") ~ "logistics_util",
+    TRUE ~ industry  
+  ))
+
+job_data <- aggregate(employment ~ industry_pool + AREA + YEAR, data = job_data, FUN = sum)
+
+```
+
+Turning to the demographics, I rename the demographic information columns.
+
+```{r}
+colnames(demos) <- c("AREA",
+                     "inc",
+                     "over25",
+                     "bach",
+                     "master",
+                     "professional",
+                     "doc",
+                     "tot_pop",
+                     "white",
+                     "black",
+                     "amerindian",
+                     "asian",
+                     "hawaiian",
+                     "other",
+                     "twomore",
+                     "med_gross_rent",
+                     "YEAR" )
+demos$AREAYEAR <- paste0(demos$AREA, demos$YEAR)
+```
+
+Then calculate percentages for eacah demographic and elminate columns I no longer want.
+
+```{r}
+demos <- demos %>%
+  rowwise() %>%
+  mutate(college = sum(c_across(c(bach,master,professional,doc))),
+         college_pct = college/over25,
+         over25_pct = over25/tot_pop,
+         white_pct = white/tot_pop,
+         black_pct = black/tot_pop,
+         amerindian_pct = amerindian/tot_pop,
+         asian_pct = asian/tot_pop,
+         hawaiian_pct = hawaiian/tot_pop,
+         other_pct = other/tot_pop,
+         twomore_pct = twomore/tot_pop
+
+  )
+
+demos <- demos[, c("AREAYEAR",
+                   "inc",
+                   "tot_pop",
+                   "college_pct",
+                   "over25_pct",
+                   "white_pct",
+                   "black_pct",
+                   "amerindian_pct",
+                   "asian_pct",
+                   "hawaiian_pct",
+                   "other_pct",
+                   "twomore_pct",
+                   "med_gross_rent")]
+
+```
+
+I also assign identifiers to each row to make merging easier. I recognize there are other ways to do this perhaps in `dplyr` or `plm` without making these identifiers, but I only use those packages when base R gets overwhelming. 
+
+```{r}
+groups   <- unique(job_data$industry_pool)
+job_data$occ_code <- match(job_data$industry_pool, groups)
+job_data$occ_code <- job_data$occ_code + 10
+job_data$AREAYEAR <- paste0(job_data$AREA, job_data$YEAR)
+job_data$ayo <- paste0(job_data$AREAYEAR, job_data$occ_code)
+```
+
+I merge the data sets into a master data frame. The data is now clean and ready for manipulation.
+
+```{r}
+job_demo <- merge(job_data, demos, by = "AREAYEAR")
+
+
+```
+
+
+
+```{r}
+
+
+emplhousing <- read.csv("emplhousing.csv")
+emplhousing$TOT_EMP <- as.numeric(emplhousing$TOT_EMP)
+emplhousing <- emplhousing %>%
+  mutate(OCC_GROUP = case_when(
+    OCC_TITLE %in% c(
+      "Computer and Mathematical Occupations",
+      "Architecture and Engineering Occupations",
+      "Legal Occupations",
+      "Management Occupations",
+      "Life, Physical, and Social Science Occupations",
+      "Business and Financial Operations Occupations"
+    ) ~ "STEM & Professions",
+    
+    OCC_TITLE %in% c(
+      "Sales and Related Occupations",
+      "Food Preparation and Serving Related Occupations",
+      "Personal Care and Service Occupations",
+      "Building and Grounds Cleaning and Maintenance Occupations",
+      "Office and Administrative Support Occupations"
+    ) ~ "Service Sector",
+    
+    OCC_TITLE %in% c(
+      "Education, Training, and Library Occupations",
+      "Protective Service Occupations",
+      "Community and Social Service Occupations",
+      "Educational Instruction and Library Occupations"
+    ) ~ "Public Sector & Education",  
+    
+    OCC_TITLE %in% c(
+      "Construction and Extraction Occupations",
+      "Installation, Maintenance, and Repair Occupations",
+      "Production Occupations",
+      "Transportation and Material Moving Occupations"
+    ) ~ "Skilled Trades",
+    
+    OCC_TITLE %in% c(
+      "Healthcare Practitioners and Technical Occupations",
+      "Healthcare Support Occupations"
+    ) ~ "Health Sector",
+    
+    OCC_TITLE %in% "Farming, Fishing, and Forestry Occupations" ~ "Agriculture",
+    
+    OCC_TITLE %in% "Arts, Design, Entertainment, Sports, and Media Occupations" ~ "Entertainment",
+    
+    TRUE ~ "All Occupations"
+  ))
+```
+
+
+
+```{r}
+# ##FIND INDUSTRY SHARES BY YEAR (NATIONAL)
+# emplhousing$AOLY <- 0
+# for (ay in unique(emplhousing$AREAYEAR)){
+#   emplhousing[emplhousing$AREAYEAR==ay,"AOLY"] <- 
+#     emplhousing[emplhousing$O_GROUP=="total" & emplhousing$AREAYEAR==ay,"TOT_EMP"]
+# }
+
+```
+
+
+
+```{r}
+nsa_index <- data.frame("AREAYEAR"= emplhousing$AREAYEAR, "index_nsa" = emplhousing$index_nsa)
+nsa_index <- nsa_index[!duplicated(nsa_index),]
+emplhousing_AO <- emplhousing[emplhousing$O_GROUP == "total",]
+emplhousing_AO <- emplhousing_AO[,c("AREAYEAR", "YEAR", "TOT_EMP")]
+emplhousing_AO <- emplhousing_AO %>%
+  rename(AO_EMP = TOT_EMP)
+empl_ANNUAL <- aggregate(AO_EMP ~ YEAR, data = emplhousing_AO, FUN = sum)
+emplhousing_AO <- emplhousing_AO[,c("AREAYEAR", "AO_EMP")]
+emplhousing <- emplhousing[emplhousing$O_GROUP != "total",]
+emplhousing_group <- aggregate(TOT_EMP ~ OCC_GROUP + AREA + AREAYEAR + AREA_TITLE + YEAR, data = emplhousing, FUN = sum)
+emplhousing_group <- merge(emplhousing_group, emplhousing_AO, by = "AREAYEAR")
+emplhousing_group <- merge(emplhousing_group, demos, by = "AREA" )
+
+```
+
+
+
+```{r}
+
+##INDUSTRY SHARES IN t=0 (2016)
+industry_shares <- emplhousing_group[emplhousing_group$YEAR == 2016,]
+industry_shares$nat_share <- industry_shares$TOT_EMP/industry_shares$AO_EMP
+industry_shares <- industry_shares[,c("AREA", "OCC_GROUP", "nat_share")]
+
+
+
+```
+
+```{r}
+
+
+
+```
+
+```{r}
+
+
+
+
+```
+
+```{r}
+natl_shocks <- aggregate(TOT_EMP ~ OCC_GROUP + YEAR, data = emplhousing_group, FUN = sum)
+
+library(plm)
+natl_shocks <- pdata.frame(natl_shocks, index = c("OCC_GROUP", "YEAR"))
+natl_shocks$nat_growth <- (natl_shocks$TOT_EMP - plm::lag(natl_shocks$TOT_EMP, 1)) / plm::lag(natl_shocks$TOT_EMP, 1) 
+```
+
+```{r}
+
+nat_emp <- natl_shocks[, c("OCC_GROUP", "YEAR", "nat_growth")]
+emplhousing_group <- merge(emplhousing_group, nat_emp, by=c("OCC_GROUP", "YEAR"))
+ay_growth <- pdata.frame(aggregate(TOT_EMP ~ AREA + YEAR + AREAYEAR, data = emplhousing, FUN = sum), index = c("AREA","YEAR"))
+ay_growth$true_growth <- (ay_growth$TOT_EMP - plm::lag(ay_growth$TOT_EMP, 1)) / plm::lag(ay_growth$TOT_EMP,1)
+ay_growth <- ay_growth[,c("AREAYEAR", "true_growth")]
+emplhousing_group <- merge(emplhousing_group, industry_shares, by=c("AREA", "OCC_GROUP"))
+emplhousing_group$loc_share <- emplhousing_group$TOT_EMP/emplhousing_group$AO_EMP
+emplhousing_group$natl_shock_wt <- emplhousing_group$nat_share*emplhousing_group$nat_growth
+emplhousing_group <- merge(emplhousing_group, ay_growth, by = "AREAYEAR" )
+emplhousing_group <- merge(emplhousing_group, nsa_index, by = "AREAYEAR")
+```
+
+```{r}
+
+# baseline_sh <- emplhousing %>%
+#   filter(YEAR == 2016) %>%
+#   select(AREA, OCC_GROUP, AOLY_sh) %>%
+#   rename(baseline_sh = AOLY_sh)
+
+
+#emplhousing$weighted_growth <- emplhousing$baseline_sh * emplhousing$nat_growth
+
+#emplhousing <- emplhousing %>% 
+#  group_by(AREA,YEAR) %>%
+#  mutate(bartik = sum(weighted_growth, na.rm = TRUE))
+
+# emplhousing$OCC_GROUP <- as.factor(emplhousing$OCC_GROUP)
+# emplhousing$OCC_GROUP <- relevel(emplhousing$OCC_GROUP, ref = "Service Sector")
+emplhousing_group <- emplhousing_group %>%
+  mutate(across(
+    c("inc2016", "tot_pop", "college_pct", "over25_pct", "true_growth", "natl_shock_wt", "index_nsa"),
+    as.numeric
+    
+  ))
+
+
+
+emplhousing_group <- na.omit(emplhousing_group)
+emplhousing_group <- as.data.frame(emplhousing_group)
+iv_model <- feols(index_nsa ~ OCC_GROUP + loc_share| AREA + YEAR | true_growth ~ natl_shock_wt, data = emplhousing_group)
+summary(iv_model)
+
+```
+
+## Empirical Strategy
+
+
+
+For inline equations, only use a single dollar sign like: $\overline{Y} = \widehat{m}\overline{X} + \widehat{b}$.
+
+## Results
+
+```{r}
+2 + 2
+```
+
+## Conclusion
+
+Marc Bellemare has a helpful [Conclusion Formula](https://marcfbellemare.com/wordpress/12060) in response to Dr. Head's.
