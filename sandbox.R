@@ -2,7 +2,7 @@
 library(dplyr)
 library(fixest)
 options(scipen = 999)
-
+library(plm)
 library(censusapi)
 years <- 2010:2019
 
@@ -216,25 +216,21 @@ job_demo <- merge(job_demo, job_demo_all, by = "AREAYEAR")
 
 ##INDUSTRY SHARES IN t=0 (2016)
 industry_shares <- job_demo[job_demo$YEAR == 2010,]
-industry_shares$nat_share <- industry_shares$employment/industry_shares$tot_emp
-industry_shares <- industry_shares[,c("AREA", "industry_pool", "nat_share")]
+industry_shares$base_share <- industry_shares$employment/industry_shares$tot_emp
+industry_shares <- industry_shares[,c("AREA", "industry_pool", "base_share")]
 
 natl_shocks <- aggregate(employment ~ occ_code + YEAR , data = job_demo, FUN = sum)
-
-library(plm)
 natl_shocks <- pdata.frame(natl_shocks, index = c("occ_code", "YEAR"))
 natl_shocks <- natl_shocks %>% arrange(occ_code, YEAR)
 natl_shocks$nat_growth <- (natl_shocks$employment - plm::lag(natl_shocks$employment, 1)) / plm::lag(natl_shocks$employment, 1) 
-
-
-
-
 nat_emp <- natl_shocks[, c("occ_code", "YEAR", "nat_growth")]
 job_demo <- merge(job_demo, nat_emp, by=c("occ_code", "YEAR"))
+
 ay_growth <- pdata.frame(aggregate(employment ~ AREA + YEAR, data = job_demo, FUN = sum), index = c("AREA","YEAR"))
 ay_growth$true_growth <- (ay_growth$employment - plm::lag(ay_growth$employment, 1)) / plm::lag(ay_growth$employment,1)
 ay_growth$AREAYEAR <- paste0(ay_growth$AREA,ay_growth$YEAR)
 ay_growth <- ay_growth[,c("AREAYEAR", "true_growth")]
+
 job_demo<- merge(job_demo, industry_shares, by=c("AREA", "industry_pool"))
 
 local_shocks <- aggregate(employment ~ occ_code + YEAR + AREA, data = job_demo, FUN = sum)
@@ -245,7 +241,7 @@ local_shocks$loc_growth <- (local_shocks$employment - plm::lag(local_shocks$empl
 loc_emp <- local_shocks[, c("occ_code", "YEAR", "AREA", "loc_growth")]
 job_demo <- merge(job_demo, loc_emp, by=c("occ_code", "YEAR", "AREA"))
 
-job_demo$natl_shock_wt <- job_demo$nat_growth*job_demo$nat_share
+job_demo$natl_shock_wt <- job_demo$nat_growth*job_demo$base_share
 job_demo <- merge(job_demo, ay_growth, by = "AREAYEAR")
 
 
@@ -269,19 +265,18 @@ job_demo <- job_demo[lim,]
 
 
 
-iv_model <- feols(median_home_value ~ 
-                    i(industry_pool, 100*loc_growth, ref = "consumer_services") +
+iv_model <- feols(asinh(median_home_value) ~ 
                     tot_pop +
                     inc 
                   | AREA + YEAR | 
-                    i(industry_pool,100*true_growth) ~ 
-                    i(industry_pool,100*natl_shock_wt), 
-                  data = job_demo)
+                    i(industry_pool,loc_growth, ref= "public_nonprofit") ~ 
+                    i(industry_pool,natl_shock_wt, ref = "public_nonprofit"), 
+                  data = job_demo, cluster = ~ AREA)
 
  summary(iv_model)
  
  ols_model <- feols(median_home_value ~ 
-                     i(industry_pool, 100*loc_growth, ref = "consumer_services") +
+                     i(industry_pool, 100*loc_growth, ref = "public_nonprofit") +
                       tot_pop +
                       inc
                    | AREA + YEAR , 

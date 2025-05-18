@@ -1,6 +1,6 @@
 ---
-title: "Your Title Here"
-subtitle: "Maybe you have a subtitle"
+title: "Applying the Bartik Shift Share Instrument to the Local Housing Market"
+
 author: "David Sneddon"
 institute: "Old Dominion University"
 format: 
@@ -59,7 +59,7 @@ options("modelsummary_factory_default" = "kableExtra")
 
 ## Introduction
 
-The objective of this paper is to demonstrate a causal effect of employment shocks on the price of housing. I intend to use a Bartik shift-share instrument using the changes in the share of employment in a sector within a metropolitan statistical area vs. changes in employment nationally. 
+The objective of this paper is to demonstrate a causal effect of local employment shocks on the price of housing. However, national effects shocks can confound the local effects, to address this confounder I intend to use a bartik instrument to control for the national effects.
 
 @bartik1991 sought to isolate exogenous national trends for analysis on the effect of local policies. This paper seeks to do the same for local shifts in the labor market, specifically the "mix" of the labor market by industry for analysis of median housing value in each Metropolitan Statistical Area (MSA) in the United States.
 
@@ -130,9 +130,6 @@ demos_l <- getCensus(
            "B15003_023E", # Population with Master's degree
            "B15003_024E", # Population with Professional school degree
            "B15003_025E", # Population with Doctorate degree
-           
-           
-           "B01003_001E", ### Total population
            "B02001_002E",  # White alone
            "B02001_003E",  # Black or African American alone
            "B02001_004E",  # American Indian and Alaska Native alone
@@ -140,6 +137,7 @@ demos_l <- getCensus(
            "B02001_006E",  # Native Hawaiian and Other Pacific Islander alone
            "B02001_007E",  # Some other race alone
            "B02001_008E",  # Two or more races
+           "B01003_001E", ### Total population
            "B25077_001E"    ### Median home value
   ),
   region = "metropolitan statistical area/micropolitan statistical area:*"
@@ -363,7 +361,7 @@ datasummary(frmla,
             fmt = fmt_significant(2))
 
 ```
-The dataset before instrument is applied is available here -> [@Sneddon2025jobdata_no_inst]
+The dataset before calculations are applied is available here -> [@Sneddon2025jobdata_no_inst]
 
 
 ## Calculations for Instrument and Local Share Changes
@@ -374,7 +372,6 @@ First establish baseline industry shares for each location. This will be needed 
 industry_shares <- job_demo[job_demo$YEAR == 2010,]
 industry_shares$base_share <- industry_shares$employment/industry_shares$tot_emp
 industry_shares <- industry_shares[,c("AREA", "industry_pool", "base_share")]
-job_demo <- merge(job_demo, industry_shares, by=c("AREA", "industry_pool"))
 ```
 
 Calculate national employment shocks and merge back into the main `job_demo` dataframe.
@@ -386,6 +383,11 @@ natl_shocks <- natl_shocks %>% arrange(occ_code, YEAR)
 natl_shocks$nat_growth <- (natl_shocks$employment - plm::lag(natl_shocks$employment, 1)) / plm::lag(natl_shocks$employment, 1) 
 nat_emp <- natl_shocks[, c("occ_code", "YEAR", "nat_growth")]
 job_demo <- merge(job_demo, nat_emp, by=c("occ_code", "YEAR"))
+ay_growth <- pdata.frame(aggregate(employment ~ AREA + YEAR, data = job_demo, FUN = sum), index = c("AREA","YEAR"))
+ay_growth$true_growth <- (ay_growth$employment - plm::lag(ay_growth$employment, 1)) / plm::lag(ay_growth$employment,1)
+ay_growth$AREAYEAR <- paste0(ay_growth$AREA,ay_growth$YEAR)
+ay_growth <- ay_growth[,c("AREAYEAR", "true_growth")]
+job_demo<- merge(job_demo, industry_shares, by=c("AREA", "industry_pool"))
 ```
 
 Same with local employment shocks, this is what the instrument is going to be interacting with.
@@ -405,18 +407,168 @@ Now for the bartik instrument. Since `nat_growth` encompasses the entire US it f
 job_demo$natl_shock_wt <- job_demo$nat_growth*job_demo$base_share
 job_demo <- merge(job_demo, ay_growth, by = "AREAYEAR")
 ```
+
+Housing shocks, measuring percent change of housing price.
+```{r}
+housing_shocks <- data.frame("AREA" = job_demo$AREA, "YEAR" = job_demo$YEAR, "AREAYEAR" = job_demo$AREAYEAR, "median_home_value" = job_demo$median_home_value)
+housing_shocks <- pdata.frame(housing_shocks, index = c("AREA", "YEAR"))
+housing_shocks <- housing_shocks[!duplicated(housing_shocks$AREAYEAR),]
+housing_shocks$hi_pctchange <- (housing_shocks$median_home_value- plm::lag(housing_shocks$median_home_value,1))/plm::lag(housing_shocks$median_home_value,1) 
+
+housing_shocks <- data.frame("AREAYEAR" = housing_shocks$AREAYEAR, "hi_pctchange" = housing_shocks$hi_pctchange)
+job_demo <- merge(job_demo, housing_shocks, by = "AREAYEAR")
+```
+Final data cleanup to remove any missing values. For these purposes, missing values mean any MSA, year, and occupation group combination with missing values.
+
+```{r}
+job_demo <- na.omit(job_demo)
+
+job_demo$industry_pool_ <- as.factor(job_demo$industry_pool)
+job_demo <- job_demo %>% 
+mutate(
+    college_pct = college_pct * 100,
+    over25_pct = over25_pct * 100
+  )
+t <- table(job_demo$AREA)
+lim <- job_demo$AREA %in% names(t)[t == 45]
+job_demo <- job_demo[lim,]
+
+```
+
+
 ## Empirical Strategy
 
-My goal is investigate the effects of national changes the employment mix affect the local home values. First 
+First we can examine a fixed effects regression to examine correlation.
 
-For inline equations, only use a single dollar sign like: $\overline{Y} = \widehat{m}\overline{X} + \widehat{b}$.
+$$
+arcsinh(Y_{lt}) = \beta_0\Delta L_{lt} + \beta_{nlt} X_{nlt} + \alpha_l + \theta_t + \varepsilon_{lt}
+$${#eq-fereg}
+Where:
+
+$Y_{lt}$ is the expected median home value in a given MSA, $l$, in a given year $t$. This regression is using an inverse hyperbolic sine transformation[^1] as I am ultimately looking for an elasticity.\
+$\Delta L_{lt}$ is a local shock in a given local industry $L$.\
+$\alpha_l$ are individual fixed effects for a given MSA.\
+$\theta_t$ are time fixed effects for a given year.
+
+[^1]: It is unlikely that there would be an issue with using $ln(Y_{lt})$ here, however I prefer the practice of using $arcsinh$ to avoid losing data.
+
+```{r}
+ fe_model <- feols(asinh(median_home_value) ~ 
+                     i(industry_pool, loc_growth, ref = "public_nonprofit") +
+                      college_pct +
+                      over25_pct +
+                      asinh(inc) +
+                      asinh(tot_pop)
+                   | AREA + YEAR , 
+                   data = job_demo, cluster = ~ AREA)
+ 
+modelsummary(fe_model, 
+             data = job_demo, 
+             title = "Regression with MSA and Year Fixed Effects",
+             fmt = fmt_significant(3),
+
+             stars = TRUE,
+             gof_map = c("nobs", "r.squared"),
+             coef_map = c("industry_pool::business_services:loc_growth" = "Business Services × Local Growth",
+                          "industry_pool::consumer_services:loc_growth" = "Consumer Services × Local Growth",
+                          "industry_pool::goods_producing:loc_growth" = "Goods Producing × Local Growth",
+                          "industry_pool::logistics_util:loc_growth" = "Logistics/Utilities × Local Growth",
+                          "college_pct" = "% College Degree",
+                          "over25_pct" = "% Residents over 25",
+                          "asinh(inc)" = "Median Income",
+                          "asinh(tot_pop)" = "MSA Population")
+)
+
+```
+There are some statistically significant findings here, even if we can't consider them causal as the local shocks may be confounded by national shocks. Using public services as a baseline. It appears that growth in any other industry will have a negative correlation on housing prices, with goods production and logistics allowing us to reject $H_0$ at $95\%$ certainty. Notably, median income and MSA population have a statistically significant yet miniscule postitive effect.
+
+In order to make a possible causal inference, we need to address the the confounder of national trends. Using the bartik instrument we can do a two stage regression:
+
+First Stage:
+
+$$
+\Delta L_{lt} = \gamma + \tau Z_{lt} + \alpha_l + \theta_t + \varepsilon_{lt} : Z_{lt} = \sum_k g_{kt} \times g_{2010,lk}
+$${#eq-firststage}
+
+$\Delta I_{lt}$: This is the local industry variable subject to treatment by the bartik instrument.
+$Z_{lt}$: This is the bartik instrument. The sum of all national industry shares over time $g_{kt}$ times the baseline industry share in 2010 in each location $g_{2010,lk}$.
+
+Second Stage:
+
+$$
+arcsinh(Y_{lt}) = \sum_k \beta_k\widehat{\Delta L_{klt}} + \gamma \mathbf{X}_{lt} + \varepsilon_{lt} 
+$${#eq-secondstage}
+
+Note that the industry groups I use are `consumer_services`, `goods_producing`, `logistics_util`, `business_services`, and `public_nonprofit`. For the purposes of the second stage regression, `public_nonprofit` $\notin k$ as it forms the baseline for the factor `industry_pool`.
+
+$Y_{lt}$ is the expected median home value in a given MSA, $l$, in a given year $t$. This regression is using an inverse hyperbolic sine transformation[^1] as I am ultimately looking for an elasticity.\
+$\beta_k$ are a vector of coefficients for each industry $k$, note that I am using `public_nonprofit` as my baseline, and therefore will not show up on the results table.\
+$\widehat{\Delta L_{klt}}$ is the treated local labor change annually for each industry estimated in @eq-firststage.\
+$\mathbf{X}_{lt}$:
+I use $arcsinh$ total population `tot_pop`, $arcsin$ household income `inc`, percentage of population over 25 that has a college degree `college_pct`, and percentage of entire population over the age of 25 `over25_pct` as controls. 
+
 
 ## Results
 
+
+
 ```{r}
-2 + 2
+iv_model <- feols(asinh(median_home_value) ~ 
+                    college_pct +
+                    over25_pct +
+                    asinh(inc) +
+                    asinh(tot_pop)
+                  | AREA + YEAR | 
+                    i(industry_pool,loc_growth, ref= "public_nonprofit") ~ 
+                    i(industry_pool,natl_shock_wt, ref = "public_nonprofit"), 
+                  data = job_demo, cluster = ~ AREA)
+
+ summary(iv_model)
+
+regz <- list(fe_model, iv_model)
+
+modelsummary(regz,
+             data = job_demo,
+             title = "Regression with MSA and Year Fixed Effects",
+             fmt = fmt_significant(3),
+
+             stars = TRUE,
+             gof_map = c("nobs", "r.squared"),
+             coef_map = c("industry_pool::business_services:loc_growth" = "Business Services × Local Growth",
+                          "industry_pool::consumer_services:loc_growth" = "Consumer Services × Local Growth",
+                          "industry_pool::goods_producing:loc_growth" = "Goods Producing × Local Growth",
+                          "industry_pool::logistics_util:loc_growth" = "Logistics/Utilities × Local Growth",
+                          "fit_industry_pool::business_services:loc_growth" = "Business Services × Local Growth",
+                          "fit_industry_pool::consumer_services:loc_growth" = "Consumer Services × Local Growth",
+                          "fit_industry_pool::goods_producing:loc_growth" = "Goods Producing × Local Growth",
+                          "fit_industry_pool::logistics_util:loc_growth" = "Logistics/Utilities × Local Growth",
+                          "college_pct" = "% College Degree",
+                          "over25_pct" = "% Residents over 25",
+                           "asinh(inc)" = "Median Income",
+                          "asinh(tot_pop)" = "MSA Population")
+)
+
 ```
+
+These are telling (and hard fought) results.
+
+First the F-test confirms a very strong instrument for each industry, meaning the national effects are well accounted and I would argue that this captures much of the endogenous effects of national employment shifts on the local housing market. 
+
+We can say with some confidence that shifts in the local labor market that come about due to local shocks do have a positive effect on housing market.
+
+One percent increases in each of the following pools are possibly causal to increases in average home value, with significance at $99\%$:
+
+Business Services: $2.7\%$\
+Consumer Services: $6.8\%$\
+Goods Production: $3.1\%$\
+Logistics and Utilities: $8.7\%$
+
+For our controls, they stay fairly close to the fixed effects predictions in @eq-fereg, as such one percent increases in the following pools corellate to increases of home value with statistical significance.
+
+
 
 ## Conclusion
 
-Marc Bellemare has a helpful [Conclusion Formula](https://marcfbellemare.com/wordpress/12060) in response to Dr. Head's.
+I think this is strong start to observing local shocks. It serves as a reminder that economics is primarily *local* meaning that while the national levers on the economy do play a large part, local levers can and do have a strong impact as well. A local city manager or town planner may look at these data and it may either motvate them, or give them pause, on how a new policy favoring one industry or another can have an impact. 
+
+
